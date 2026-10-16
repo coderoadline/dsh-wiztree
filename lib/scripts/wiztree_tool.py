@@ -44,12 +44,19 @@ if HERE not in sys.path:
 
 
 def _configure_stdio() -> None:
-    """Force UTF-8 on our own streams (Windows consoles default to a legacy codepage)."""
+    """Force UTF-8 on our own streams (Windows consoles default to a legacy codepage).
+
+    The analysis scripts are plain `print()` calls, so a legacy code page would
+    raise UnicodeEncodeError in the middle of a report. Our own stream is
+    reconfigured here, and PYTHONIOENCODING is exported for anything spawned
+    underneath; the plugin also passes it to the interpreter explicitly.
+    """
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 
 @contextlib.contextmanager

@@ -316,4 +316,6 @@ test('readdir sanity: the package ships what the manifest lists', async () => {
     assert.ok(entries.includes(expected), `lib/${expected} is missing`)
   }
   assert.ok(existsSync(join(PACKAGE_ROOT, 'cordis.patch.yml')))
+  assert.ok(existsSync(join(PACKAGE_ROOT, 'tools', 'build-client.mjs')))
+  assert.ok(existsSync(join(PACKAGE_ROOT, 'tools', 'sync-scripts.mjs')))
 })
