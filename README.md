@@ -55,27 +55,38 @@ Markdown 阅读器里变成死链。
 
 ## 安装
 
-插件是一个普通的 DSH bundle（`dsh.bundle.patch` + `dsh.client`），装法与其它本地插件一致：
+插件是一个普通的 DSH bundle（`dsh.bundle.patch` + `dsh.client`）。**新装一个 bundle 依赖必须重启
+DSH Desktop**：运行中的宿主在启动时就固定了 profile 的 bundle 清单，之后只热重载
+`cordis.patch.yml`，不会为了新依赖重新组合。（Web 界面的「插件」页装完也会提示重启。）
 
-1. 在 DSH Desktop 侧边栏的 **插件（Plugins）** 页面点安装，路径填本目录：
+### 方式一：插件页面（推荐给日常使用）
+
+1. 侧边栏 **插件（Plugins）** → 安装，路径填本目录：
 
    ```
    E:\test_video\dsh-wiztree
    ```
 
-2. 安装后 `~/.dsh/profiles/desktop/package.json` 会多出一条
-   `"dsh-wiztree": "link:E:/test_video/dsh-wiztree"`，`dsh.profile.bundles` 会多出 `dsh-wiztree`，
-   同时 `cordis.yml` 里出现本包 `cordis.patch.yml` 插入的那一行：
+2. 重启 DSH Desktop。
 
-   ```yaml
-   - id: wiztree
-     name: dsh-wiztree
-   ```
+### 方式二：手工（等价于插件页面做的三件事）
 
-3. 宿主半部分（工具）立即生效；浏览器半部分由 `dsh-client-modules` 按需从
-   `/plugins/dsh-wiztree/client.js` 加载，HMR 会自己把新插件加进页面 —— 若没生效，刷新一次页面。
+```powershell
+# 1) 依赖 + bundle 选择
+#    ~/.dsh/profiles/desktop/package.json
+#      "dependencies": { "dsh-wiztree": "link:E:/test_video/dsh-wiztree" }
+#      "dsh": { "profile": { "bundles": [ ..., "dsh-wiztree" ] } }
+# 2) 安装（用 DSH 自带运行时里的 pnpm，避免版本差异）
+cd $env:DSH_PROFILE_DIR
+& "$env:DSH_HOME\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe" `
+  "$env:DSH_HOME\dsh-runtimes\dsh-primary-runtime\dependencies\pnpm\bin\pnpm.mjs" install
+# 3) 重启 DSH Desktop —— 之后 cordis.yml 会自动带上本包 cordis.patch.yml 插入的：
+#      - id: wiztree
+#        name: dsh-wiztree
+```
 
-**回退**：在插件页面禁用/卸载即可（`~/.dsh/profiles/desktop/` 下会留下最近的 `.bak-*`）。
+**回退**：在插件页面禁用/卸载，或把 `package.json` 里那两处改动删掉再 `pnpm install`。
+本仓库安装时留下的备份在 `~/.dsh/profiles/desktop/*.bak-wiztree-*`。
 
 ### 可选配置
 
@@ -93,18 +104,24 @@ Markdown 阅读器里变成死链。
 ## 开发
 
 ```bash
-npm run check        # 语法检查 + 21 个单测（含一次真实的 Python 端到端跑通）
+npm run check        # 生成物是最新的 + 语法检查 + 24 个单测（含一次真实的 Python 端到端跑通）
 npm run test         # 只跑单测
+npm run build:client # 由 lib/install.js 生成 lib/client.js（改完浏览器半部分必须跑）
 npm run sync-skill   # 从技能目录同步三个分析脚本到 lib/scripts/
 npm run verify-skill-sync   # CI 用：脚本与技能不一致就以非 0 退出
 ```
 
 `lib/scripts/wiztree_snapshot_diff.py`、`wiztree_query.py`、`wiztree_verify_delete.py`
 是**技能目录的逐字节拷贝**，不要在这里手改 —— 改技能，然后 `npm run sync-skill`。
+测试会检查两者是否一致。
 
 `lib/scripts/wiztree_tool.py` 是本仓库自己的 JSON 包装器（技能里没有）：它调用被包装脚本的
 `main(argv)`、捕获 stdout、最后打印一行 JSON，这样工具结果既能保留原来给人类看的表格，
 又能给模型结构化数据。
+
+`lib/client.js` 是**生成文件**：源在 `lib/install.js`（纯 ESM，方便单测），
+`tools/build-client.mjs` 把它包成 `__ModuleLoader__.load({ id, factory })`
+的 CommonJS 工厂——这是 harness 唯一会发给浏览器的形态，且插件不能 import 同级模块。
 
 ### 目录结构
 
@@ -117,11 +134,13 @@ dsh-wiztree/
 │   ├── run-python.js      # ctx.subprocess 封装：找解释器、跑脚本、解析 JSON
 │   ├── python-runtime.js  # 解释器发现与 pandas/numpy 探测（带缓存）
 │   ├── paths.js           # 路径语法（宿主侧参考实现）
-│   ├── client.js          # 浏览器半部分入口（__ModuleLoader__ 包）
-│   ├── install.js         # 浏览器半部分实现（点击拦截，纯 ESM，可单测）
+│   ├── install.js         # 浏览器半部分源码（纯 ESM，可单测）
+│   ├── client.js          # 生成物：harness 实际发给浏览器的客户端 bundle
 │   └── scripts/           # 三个分析脚本（同步自技能）+ wiztree_tool.py + _env_probe.py
-├── tests/                 # node:test：路径语法、宿主↔浏览器一致性、工具端到端
-└── tools/sync-scripts.mjs # 与技能目录同步
+├── tests/                 # node:test：路径语法、宿主↔浏览器一致性、工具端到端、bundle 形态
+└── tools/
+    ├── build-client.mjs   # 生成 lib/client.js
+    └── sync-scripts.mjs   # 与技能目录同步
 ```
 
 ### 已知边界
