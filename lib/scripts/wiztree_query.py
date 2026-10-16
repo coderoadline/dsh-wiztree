@@ -66,6 +66,20 @@ def human(n: float) -> str:
     return f"{s}{int(a)} B"
 
 
+def use_utf8_output() -> None:
+    """
+    让本脚本的 print() 走 UTF-8。
+
+    输出里有中文，Windows 控制台默认 GBK/CP936：直接跑容易抛 UnicodeEncodeError，
+    重定向到管道时则会变成乱码。这里只改编码，不改任何输出内容。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def load(path: str) -> pd.DataFrame:
     enc = sniff_encoding(path)
     with open(path, "r", encoding=enc, newline="") as fh:
@@ -245,6 +259,8 @@ def main(argv=None) -> int:
     ap.add_argument("--dump-csv", default="")
     ap.add_argument("--rows", action="store_true", help="额外打印结构化 JSON（供工具调用）")
     args = ap.parse_args(argv)
+
+    use_utf8_output()
 
     if args.rows:
         query_rows([args.csv, "--path", args.path]

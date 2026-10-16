@@ -146,6 +146,21 @@ def human(n: float) -> str:
     return f"{int(n)} B"
 
 
+def use_utf8_output() -> None:
+    """
+    让本脚本的 print() 走 UTF-8。
+
+    本脚本会打印 ✅/⚠️/❌ 和中文，而 Windows 控制台默认是 GBK/CP936，
+    直接跑会抛 UnicodeEncodeError（重定向到管道时则会变成乱码）。
+    这里只改编码，不改任何输出内容。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def scan(root: str) -> dict:
     """只读遍历一个目录。"""
     info = {
@@ -343,6 +358,8 @@ def main(argv=None) -> int:
     ap.add_argument("--quiet", action="store_true", help="只输出结论")
     ap.add_argument("--json", action="store_true", help="最后一行打印结构化 JSON（供工具调用）")
     args = ap.parse_args(argv)
+
+    use_utf8_output()
 
     if args.json:
         print("注意：本脚本**只读**，不会删除或修改任何文件。\n")

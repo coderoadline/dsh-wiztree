@@ -373,6 +373,20 @@ def human(n: float) -> str:
     return f"{sign}{int(a)} B"
 
 
+def use_utf8_output() -> None:
+    """
+    让本脚本的 print() 走 UTF-8。
+
+    报告里有中文和 ✅/⚠️/🆕，Windows 控制台默认 GBK/CP936：直接跑容易抛
+    UnicodeEncodeError，重定向到管道时则会变成乱码。这里只改编码，不改输出内容。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def md(s) -> str:
     return str(s).replace("|", "\\|")
 
@@ -394,6 +408,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dump-csv", default="")
     ap.add_argument("--dump-json", default="")
     args = ap.parse_args(argv)
+
+    use_utf8_output()
 
     print("=" * 78)
     print("WizTree 快照对比  (只对比文件夹行；大小/文件/文件夹 均为子树累计值)")
