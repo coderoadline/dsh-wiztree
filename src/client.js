@@ -219,18 +219,21 @@ export function destinationOf(element, cwd) {
 }
 
 /**
- * Choose the session whose working directory should resolve relative paths.
- * @param {object} ctx - Client context.
- * @returns {string | undefined} Working directory.
+ * Ask the host half whether it is actually mounted.
+ *
+ * A page outlives the host module: reloading the browser picks up a new client
+ * bundle while the running app keeps the host module it imported at startup
+ * (enabling or re-enabling a bundle does not re-import it). Consuming a click
+ * the host cannot honour is worse than not consuming it at all — the renderer's
+ * own preview gesture would be gone too, and the click would do nothing at all.
+ * So the interceptor is installed only after this probe answers.
+ * @returns {Promise<boolean>} True when `/wiztree/stat` answered with our JSON shape.
  */
-function sessionCwd(ctx) {
-  const sessions = ctx?.get?.('sessions')
-  const snapshot = sessions?.list?.getSnapshot?.()
-  const rows = snapshot?.byId
-  if (rows === undefined || rows === null) return undefined
-  const candidates = Object.values(rows)
-  const main = candidates.find(row => (row?.retainedBy?.mainView ?? 0) > 0)
-  return main?.cwd ?? candidates.find(row => typeof row?.cwd === 'string' && row.cwd.length > 0)?.cwd
+async function hostIsAvailable() {
+  // A deliberately invalid body: our route answers 400 in its own JSON shape,
+  // while an absent route yields the harness HTML 404, which fails to parse.
+  const answer = await postJson(STAT_ROUTE, { path: '' })
+  return typeof answer?.error === 'string'
 }
 
 /**
@@ -392,7 +395,11 @@ export function createInterceptor(ctx) {
     if (element.getAttribute('data-ref-chip') !== null) return
     if (element.getAttribute('data-dsh-wiztree-recycled') !== null) return
 
-    const target = destinationOf(element, sessionCwd(ctx))
+    // NO cwd on purpose: only an absolute destination (or a `file:` URL) is
+    // ours. A workspace-relative link such as `lib/index.js` is a "show me that
+    // file" reference, not a cleanup candidate, so it stays with the renderer —
+    // which is what keeps the sidebar preview working for it.
+    const target = destinationOf(element, undefined)
     if (target === undefined) return
 
     // Take the gesture over: the renderer's own handler (which would open a
@@ -418,19 +425,39 @@ const inject = []
  * @returns {() => void} Disposer.
  */
 function apply(ctx) {
-  const dispose = createInterceptor(ctx)
-  // A page-side marker makes "is the browser half actually loaded?" answerable
-  // from the console without instrumenting the harness.
-  if (typeof window !== 'undefined') {
-    window.__DSH_WIZTREE__ = {
-      name,
-      routes: { stat: STAT_ROUTE, open: OPEN_ROUTE, trash: TRASH_ROUTE },
-      installedAt: new Date().toISOString(),
-      dispose,
-    }
+  let dispose
+  // A page-side marker makes both "is the browser half loaded?" and "did the
+  // host half answer?" answerable from the console.
+  const marker = {
+    name,
+    routes: { stat: STAT_ROUTE, open: OPEN_ROUTE, trash: TRASH_ROUTE },
+    installedAt: new Date().toISOString(),
+    hostAvailable: undefined,
+    mode: 'plain click recycles an ABSOLUTE path; Ctrl/Cmd+click reveals it; relative links are left to the renderer',
   }
-  ctx?.logger?.info?.('[dsh-wiztree] 已就绪：单击路径 → 移入回收站；Ctrl/⌘+单击 → 在资源管理器中打开')
-  return dispose
+  if (typeof window !== 'undefined') window.__DSH_WIZTREE__ = marker
+
+  void (async () => {
+    const available = await hostIsAvailable()
+    marker.hostAvailable = available
+    if (!available) {
+      // Degrade to doing NOTHING, never to breaking the transcript: a plugin
+      // that cannot act must leave the host's own gesture intact.
+      ctx?.logger?.warn?.(
+        '[dsh-wiztree] 宿主半部分没有响应 —— 改完插件源码后必须重启 DSH Desktop，只刷新页面不够。'
+        + ' 已停用点击接管，路径链接保持原本行为。',
+      )
+      return
+    }
+    dispose = createInterceptor(ctx)
+    marker.dispose = dispose
+    ctx?.logger?.info?.('[dsh-wiztree] 已就绪：单击绝对路径 → 移入回收站；Ctrl/⌘+单击 → 在资源管理器中打开')
+  })()
+
+  return () => {
+    dispose?.()
+    dispose = undefined
+  }
 }
 
 export { name, inject, apply }

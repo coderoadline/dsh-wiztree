@@ -12,7 +12,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
-import { parseDestination, fileUrlToPath, isAbsolutePath, isFileLinkButton } from '../src/client.js'
+import { parseDestination, fileUrlToPath, isAbsolutePath, isFileLinkButton, destinationOf } from '../src/client.js'
 import { parsePathTarget } from '../lib/paths.js'
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -67,6 +67,33 @@ test('isFileLinkButton recognises the renderer local-path control', () => {
   assert.equal(isFileLinkButton({ tagName: 'BUTTON', className: 'plain' }), false)
   assert.equal(isFileLinkButton({ tagName: 'A', className: 'x1_fileLink_abc' }), false)
   assert.equal(isFileLinkButton(null), false)
+  // Structural fallback: the class hash may change, a `title` holding an
+  // absolute path may not.
+  assert.equal(isFileLinkButton({ tagName: 'BUTTON', className: 'x9', getAttribute: () => 'E:\\a\\b' }), true)
+  assert.equal(isFileLinkButton({ tagName: 'BUTTON', className: 'x9', getAttribute: () => 'lib/index.js' }), false)
+})
+
+test('only an absolute destination is taken over; relative links stay with the renderer', () => {
+  /**
+   * Stand in for the renderer's local-path control.
+   * @param {string} title - The `title` attribute the primitive sets to the path.
+   * @returns {object} Element stub.
+   */
+  const link = title => ({
+    tagName: 'BUTTON',
+    className: 'x1 _fileMention_abc _fileLink_abc',
+    getAttribute: name => (name === 'title' ? title : null),
+    textContent: title,
+  })
+
+  assert.equal(destinationOf(link('E:\\test_video\\回收站测试'), undefined)?.path, 'E:\\test_video\\回收站测试')
+  assert.equal(destinationOf(link('file:///C:/Users/ASUS'), undefined)?.path, 'C:\\Users\\ASUS')
+
+  // A workspace-relative reference is a "show me that file" link — taking it
+  // over would delete it AND swallow the sidebar preview the user needs.
+  assert.equal(destinationOf(link('dsh-wiztree/lib/index.js'), undefined), undefined)
+  assert.equal(destinationOf(link('lib/index.js'), undefined), undefined)
+  assert.equal(destinationOf(link('https://example.com/a'), undefined), undefined)
 })
 
 test('the generated bundle registers one lazy-CJS factory with the plugin surface', () => {

@@ -437,13 +437,27 @@ test('the guard protects the working directory and its ancestors, not its childr
 
   const self = await callRoute(routes, '/wiztree/trash', { path: PACKAGE_ROOT })
   assert.equal(self.status, 502)
-  assert.match(self.payload.error, /working directory/u)
+  // Either rule may claim it: whenever the suite runs from the package root,
+  // that root is both the plugin's own package and the working directory.
+  assert.match(self.payload.error, /own package directory|working directory/u)
   assert.ok(existsSync(PACKAGE_ROOT), 'the package root must survive the refused request')
 
   const ancestor = await callRoute(routes, '/wiztree/trash', { path: dirname(PACKAGE_ROOT) })
   assert.equal(ancestor.status, 502)
   assert.match(ancestor.payload.error, /parent of the working directory/u)
   assert.ok(existsSync(dirname(PACKAGE_ROOT)), 'the parent must survive the refused request')
+})
+
+test("the guard never lets a click recycle the plugin's own source", async () => {
+  const { routes } = await mountPlugin()
+  for (const relative of ['package.json', join('lib', 'index.js'), join('src', 'client.js')]) {
+    const source = join(PACKAGE_ROOT, relative)
+    assert.ok(existsSync(source), `${relative} should exist before the attempt`)
+    const refused = await callRoute(routes, '/wiztree/trash', { path: source })
+    assert.equal(refused.status, 502, `${relative} must be refused`)
+    assert.match(refused.payload.error, /own package/u)
+    assert.ok(existsSync(source), `${relative} must survive the refused request`)
+  }
 })
 
 test('the synced scripts match the skill copies byte for byte', () => {

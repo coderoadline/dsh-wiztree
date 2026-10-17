@@ -44,11 +44,24 @@ python scripts\wiztree_snapshot_diff.py 旧.csv 新.csv -o out\report.md --min-m
 
 | 点击 | 行为 |
 | --- | --- |
-| **左键单击** | `POST /wiztree/stat` 判断是文件还是目录 → `POST /wiztree/trash` → **移入回收站**，并弹一条提示；被点过的链接会置灰加删除线 |
+| **左键单击「绝对路径」** | `POST /wiztree/stat` 判断是文件还是目录 → `POST /wiztree/trash` → **移入回收站**，并弹一条提示；被点过的链接会置灰加删除线 |
+| **左键单击「相对路径」** | **不拦截**，交给渲染器照常打开右侧只读预览 —— `lib/index.js` 这类工作区相对引用是「给我看看」，不是清理目标 |
 | **Ctrl / ⌘ + 单击** | `POST /wiztree/open` → 在资源管理器中**定位**（只看，不动） |
 | Shift / Alt + 单击、非左键 | 不拦截 |
 | `http(s)` 链接、图片、参考文献 chip | 不拦截 |
 | 正在划选文本时的点击 | 不拦截 |
+
+### 一条硬规则：做不了就什么都别做
+
+插件**只有在确认宿主半部分能应答之后才安装点击接管**（启动时拿一个故意非法的请求体去
+`POST /wiztree/stat`，我们自己的路由会用 JSON 回 400，路由不存在则是 harness 的 HTML 404、
+解析不出来）。探不通就**完全不接管**，并在控制台留一条警告。
+
+这条规则是被一次真实的 bug 逼出来的：页面刷新（F5）会载入新的浏览器半部分，而**运行中的 app
+仍然是启动时 import 的那份宿主模块**。那种「半新半旧」的状态下，如果照样把点击吞掉，
+手势既执行不了、侧边栏预览也没了 —— 看起来就像「插件把浏览功能弄坏了」。宁可什么都不做。
+
+出问题时在控制台执行 `window.__DSH_WIZTREE__` 可以看到 `hostAvailable` 与 `mode`。
 
 **为什么是回收站而不是删除**：快照复核的最后一步就是「这条不要了」，而这个决定应该是可反悔的。
 插件里因此**没有任何永久删除通道**——不是靠一个 flag 关掉的，而是根本没有实现。
@@ -60,7 +73,8 @@ python scripts\wiztree_snapshot_diff.py 旧.csv 新.csv -o out\report.md --min-m
 * 盘符根（`C:\`）、网络共享根（`\\server\share`）；
 * `%SystemRoot%`、`%ProgramFiles%`、`%ProgramFiles(x86)%`、`%ProgramData%`、
   `%USERPROFILE%`、`%LOCALAPPDATA%`、`%APPDATA%` 这些已知根**本身**；
-* 插件自己工作目录及其任何父目录。
+* 插件自己的包目录（整个 `dsh-wiztree/`）—— 会话里到处是它自己源码的链接；
+* 插件自己工作目录及其任何**父目录**（子目录放行：「我项目里这个文件夹是垃圾」是正当目标）。
 
 其余一律放行 —— 包括普通文件夹（用户明确要的就是「点文件夹进回收站」）。
 
@@ -125,7 +139,7 @@ cd $env:DSH_PROFILE_DIR
 ## 开发
 
 ```bash
-npm run check        # 生成物是最新的 + 语法检查 + 31 个单测（含真实的 Python 端到端与真实的回收站往返）
+npm run check        # 生成物是最新的 + 语法检查 + 34 个单测（含真实的 Python 端到端与真实的回收站往返）
 npm run test         # 只跑单测
 npm run build:client # 由 src/client.js 生成 lib/client.js（改完浏览器半部分必须跑）
 npm run sync-skill   # 从技能目录同步三个分析脚本到 lib/scripts/
