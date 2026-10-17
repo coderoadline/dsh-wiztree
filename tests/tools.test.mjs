@@ -426,6 +426,26 @@ test('a click sends a real folder to the Recycle Bin and leaves it recoverable',
   assert.equal(existsSync(doomed), false, 'the folder should have left the filesystem')
 })
 
+test('the guard protects the working directory and its ancestors, not its children', async () => {
+  const { routes } = await mountPlugin()
+  // The plugin captures process.cwd() at load time, which is the package root
+  // whenever the suite runs the documented way.
+  if (resolve(process.cwd()) !== PACKAGE_ROOT) {
+    assert.ok(true, 'skipped: the suite was not run from the package root')
+    return
+  }
+
+  const self = await callRoute(routes, '/wiztree/trash', { path: PACKAGE_ROOT })
+  assert.equal(self.status, 502)
+  assert.match(self.payload.error, /working directory/u)
+  assert.ok(existsSync(PACKAGE_ROOT), 'the package root must survive the refused request')
+
+  const ancestor = await callRoute(routes, '/wiztree/trash', { path: dirname(PACKAGE_ROOT) })
+  assert.equal(ancestor.status, 502)
+  assert.match(ancestor.payload.error, /parent of the working directory/u)
+  assert.ok(existsSync(dirname(PACKAGE_ROOT)), 'the parent must survive the refused request')
+})
+
 test('the synced scripts match the skill copies byte for byte', () => {
   const skillDir = join(process.env.DSH_HOME ?? join(process.env.USERPROFILE ?? '.', '.dsh'), 'skills', 'wiztree-snapshot-diff', 'scripts')
   for (const name of ['wiztree_snapshot_diff.py', 'wiztree_query.py', 'wiztree_verify_delete.py']) {
