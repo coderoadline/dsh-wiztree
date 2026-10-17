@@ -477,7 +477,9 @@ test('the guard protects the working directory and its ancestors, not its childr
 
 test("the guard never lets a click recycle the plugin's own source", async () => {
   const { routes } = await mountPlugin()
-  for (const relative of ['package.json', join('lib', 'index.js'), join('src', 'client.js')]) {
+  // Directories inside the package, so the self-protection rule is what answers
+  // (a file would be refused earlier, by the folder-only rule below).
+  for (const relative of ['lib', 'src', join('lib', 'scripts')]) {
     const source = join(PACKAGE_ROOT, relative)
     assert.ok(existsSync(source), `${relative} should exist before the attempt`)
     const refused = await callRoute(routes, '/wiztree/trash', { path: source })
@@ -485,6 +487,24 @@ test("the guard never lets a click recycle the plugin's own source", async () =>
     assert.match(refused.payload.error, /own package/u)
     assert.ok(existsSync(source), `${relative} must survive the refused request`)
   }
+})
+
+test('a click never recycles a file — a file belongs in the sidebar preview', async () => {
+  const { routes } = await mountPlugin()
+  const out = mkdtempSync(join(tmpdir(), 'wiztree-file-'))
+  const keep = join(out, 'keep-me.txt')
+  writeFileSync(keep, 'read me')
+
+  const refused = await callRoute(routes, '/wiztree/trash', { path: keep })
+  assert.equal(refused.status, 409)
+  assert.match(refused.payload.error, /只把文件夹移入回收站/u)
+  assert.equal(refused.payload.type, 'file')
+  assert.ok(existsSync(keep), 'the file must survive a recycle attempt')
+
+  // A file inside the plugin package is refused too, just by the earlier rule.
+  const source = await callRoute(routes, '/wiztree/trash', { path: join(PACKAGE_ROOT, 'package.json') })
+  assert.equal(source.status, 409)
+  assert.ok(existsSync(join(PACKAGE_ROOT, 'package.json')))
 })
 
 test('the synced scripts match the skill copies byte for byte', () => {
