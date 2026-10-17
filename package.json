@@ -4,6 +4,7 @@
   "description": "DeepSeek Harness plugin: WizTree snapshot analysis tools (diff / query / verify-delete) plus one-click open-in-Explorer for file paths in the chat.",
   "license": "MIT",
   "type": "module",
+  "icon": "icon.svg",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
@@ -11,9 +12,10 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "lib/index.js",
-    "lib/client.js",
-    "lib/scripts",
+    "lib",
+    "tools",
+    "locale",
+    "icon.svg",
     "cordis.patch.yml",
     "README.md"
   ],

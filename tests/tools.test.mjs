@@ -14,12 +14,14 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, realpathSync } from 'node:fs'
 import { lstat, readdir, stat } from 'node:fs/promises'
+import { statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
 import { resetPythonCache } from '../lib/python-runtime.js'
+import { loadShippedGate } from './helpers/shipped-gate.mjs'
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const FIXTURES = join(PACKAGE_ROOT, 'tests', 'fixtures')
@@ -149,6 +151,41 @@ test('the plugin registers the expected tool catalog', async () => {
     assert.equal(typeof definition.output?.schema?.type, 'string', `${name} has no output schema`)
     assert.equal(typeof definition.output?.render, 'function', `${name} has no render`)
   }
+})
+
+test('every output schema passes the harness own JSON Schema gate', async (t) => {
+  const gate = loadShippedGate()
+  if (gate === undefined) {
+    t.skip('DSH Desktop app.asar is not installed on this machine')
+    return
+  }
+  assert.equal(gate.hasShippedIsJsonValue, true, 'the shipped isJsonValue must be extractable')
+  const { tools } = await mountPlugin()
+  for (const [name, definition] of tools) {
+    assert.doesNotThrow(
+      () => gate.assertSupportedJsonSchema(definition.output.schema),
+      `${name}: output.schema is rejected by ctx.tools.register()`,
+    )
+  }
+})
+
+test('the gate rejects the authoring shorthand it must not be given', async (t) => {
+  const gate = loadShippedGate()
+  if (gate === undefined) {
+    t.skip('DSH Desktop app.asar is not installed on this machine')
+    return
+  }
+  // Regression pin: `required: true` per property is the authoring shorthand
+  // defineTool() compiles. ctx.tools.register() takes raw JSON Schema, so that
+  // shorthand is rejected there — the exact bug that made the plugin's fiber
+  // report 启动失败 while its routes were already mounted.
+  assert.throws(
+    () => gate.assertSupportedJsonSchema({ type: 'object', properties: { a: { type: 'string', required: true } } }),
+    /required is not supported/u,
+  )
+  assert.doesNotThrow(
+    () => gate.assertSupportedJsonSchema({ type: 'object', required: ['a'], properties: { a: { type: 'string' } } }),
+  )
 })
 
 test('required parameters are declared and optional ones are not', async () => {
@@ -318,4 +355,29 @@ test('readdir sanity: the package ships what the manifest lists', async () => {
   assert.ok(existsSync(join(PACKAGE_ROOT, 'cordis.patch.yml')))
   assert.ok(existsSync(join(PACKAGE_ROOT, 'tools', 'build-client.mjs')))
   assert.ok(existsSync(join(PACKAGE_ROOT, 'tools', 'sync-scripts.mjs')))
+})
+
+test('the plugin presents itself in Settings: relative icon and locale metadata', () => {
+  const manifest = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'package.json'), 'utf8'))
+  // The settings list reads these three resources; a bare row with no title,
+  // description or icon reads as broken even when the plugin works.
+  assert.equal(typeof manifest.icon, 'string', 'package.json must declare an icon')
+  assert.equal(
+    /^[A-Za-z][A-Za-z\d+.-]*:/u.test(manifest.icon) || manifest.icon.startsWith('/'),
+    false,
+    'the icon must be a relative file path',
+  )
+  const iconPath = join(PACKAGE_ROOT, manifest.icon)
+  assert.ok(existsSync(iconPath), `${manifest.icon} is missing`)
+  assert.ok(statSync(iconPath).size < 256 * 1024, 'the icon must stay under the 256 KiB cap')
+
+  for (const language of ['en', 'zh']) {
+    const localePath = join(PACKAGE_ROOT, 'locale', `${language}.json`)
+    assert.ok(existsSync(localePath), `locale/${language}.json is missing`)
+    const dictionary = JSON.parse(readFileSync(localePath, 'utf8'))
+    assert.equal(typeof dictionary.meta?.title, 'string', `${language}: meta.title is required`)
+    assert.ok(dictionary.meta.title.length > 0)
+    assert.equal(typeof dictionary.meta?.description, 'string', `${language}: meta.description is required`)
+    assert.ok(dictionary.meta.description.length > 20)
+  }
 })

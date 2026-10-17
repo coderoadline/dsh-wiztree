@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WizTree Snapshot Tools",
+    "description": "Analyse WizTree CSV snapshots (diff two scans, drill into one folder, verify deletion candidates read-only) and open any file path from the transcript straight in File Explorer."
+  }
+}
