@@ -17,14 +17,13 @@ DeepSeek Harness 插件：把「WizTree 快照分析」变成模型可直接调�
 python scripts\wiztree_snapshot_diff.py 旧.csv 新.csv -o out\report.md --min-mb 1
 ```
 
-现在变成四个模型可见的工具，不需要工作区里存在脚本、也不需要模型记得参数：
+现在变成三个模型可见的工具，不需要工作区里存在脚本、也不需要模型记得参数：
 
 | 工具 | 干什么 | 对应脚本 |
 | --- | --- | --- |
 | `wiztree_diff` | 对比两份快照：体检、自顶向下定位增长、最小相关父文件夹、精确新增文件/目录数，并写出 Markdown 报告 | `wiztree_snapshot_diff.py` |
 | `wiztree_query` | 只读快照查某个文件夹：直属子项 / 递归后代 / 旧版本残留 / 长期未修改；顺带核对路径现在还在不在 | `wiztree_query.py` |
 | `wiztree_verify_delete` | 只读查看候选目录真实内容，给 ✅/⚠️/❌ 结论（第 5 步子智能体用） | `wiztree_verify_delete.py` |
-| `open_path` | 在资源管理器里定位某个文件/目录（`reveal`，默认），或用默认程序打开（`open`） | — |
 
 模型侧只看到「工具」，Python 与 pandas 由插件自己解决：默认使用 **DSH Desktop 自带运行时**里的
 CPython（`<home>/dsh-runtimes/dsh-primary-runtime/dependencies/python`，内含 pandas/numpy），
@@ -203,7 +202,7 @@ dsh-wiztree/
 ├── src/
 │   └── client.js          # 浏览器半部分源码（纯 ESM，可单测）
 ├── lib/
-│   ├── index.js           # 宿主半部分：四个工具 + /wiztree/{stat,open,trash} 三条路由
+│   ├── index.js           # 宿主半部分：三个工具 + /wiztree/{stat,open,trash} 三条路由
 │   ├── run-python.js      # ctx.subprocess 封装：找解释器、跑脚本、解析 JSON
 │   ├── python-runtime.js  # 解释器发现与 pandas/numpy 探测（带缓存）
 │   ├── paths.js           # 路径语法（宿主侧参考实现）
@@ -228,7 +227,9 @@ dsh-wiztree/
 * **回收站的前提是卷上有回收站**：`SendToRecycleBin` 在回收站被禁用的卷上会直接永久删除。
   这是 Windows 语义，插件无法替用户判断，所以指向那种卷的路径请自己确认后再点。
 * 回收站里的东西只能从**资源管理器**还原，插件没有实现「撤销」。
-* `open_path` / `/wiztree/open` 只打开**已存在**的绝对路径，不执行搜索或命令。
+* `/wiztree/open`（Ctrl/⌘+单击的手势）只定位**已存在**的绝对路径，不执行搜索或命令。
+* **没有 `open_path` 工具**：打开路径是手势，不是工具。单击文件夹 = 移进回收站，
+  Ctrl/⌘+单击 = 在资源管理器里定位，两者都由浏览器半部分发起。
 * 宿主路由未做来源校验（与 `dsh-host-open-in-app` 不同）：它们只读路径是否存在、按用户手势
   打开或移入回收站，不读也不返回文件内容。若以后要暴露到局域网，需要补上 `ctx.connection`
   的信任检查 —— **`/wiztree/trash` 尤其如此**。

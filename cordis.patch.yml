@@ -3,7 +3,7 @@
 # Applied as a profile bundle layer (the `dsh.bundle.patch` manifest field).
 # One row mounts both halves of the plugin:
 #   * host  (`lib/index.js`)  — registers the model-facing tools
-#     `wiztree_diff` / `wiztree_query` / `wiztree_verify_delete` / `open_path`
+#     `wiztree_diff` / `wiztree_query` / `wiztree_verify_delete`
 #   * client (`lib/client.js`) — served by dsh-client-modules under /plugins and
 #     loaded by the Web GUI, where it turns file paths in the transcript into
 #     clickable "open in File Explorer" controls.

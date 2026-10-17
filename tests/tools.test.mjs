@@ -145,7 +145,10 @@ async function mountPlugin() {
 
 test('the plugin registers the expected tool catalog', async () => {
   const { tools } = await mountPlugin()
-  assert.deepEqual([...tools.keys()].sort(), ['open_path', 'wiztree_diff', 'wiztree_query', 'wiztree_verify_delete'])
+  assert.deepEqual([...tools.keys()].sort(), ['wiztree_diff', 'wiztree_query', 'wiztree_verify_delete'])
+  // Opening a path is a gesture, not a model-facing tool: it lives in the client
+  // half plus /wiztree/open, so no tool may claim the name.
+  assert.equal(tools.has('open_path'), false)
   for (const [name, definition] of tools) {
     assert.equal(typeof definition.description, 'string', `${name} has no description`)
     assert.ok(definition.description.length > 80, `${name} description is too thin`)
@@ -246,17 +249,13 @@ test('required parameters are declared and optional ones are not', async () => {
   assert.deepEqual(requiredOf('wiztree_diff'), ['new_snapshot', 'old_snapshot'])
   assert.deepEqual(requiredOf('wiztree_query'), ['path', 'snapshot'])
   assert.deepEqual(requiredOf('wiztree_verify_delete'), ['paths'])
-  assert.deepEqual(requiredOf('open_path'), ['path'])
-
   assert.deepEqual(Object.keys(tools.get('wiztree_diff').parameters.properties), [
     'old_snapshot', 'new_snapshot', 'output', 'min_mb', 'top', 'depth', 'root', 'subtree', 'dump_csv',
   ])
   const diff = tools.get('wiztree_diff').parameters.properties
   assert.equal(diff.min_mb.type, 'number')
   assert.equal(diff.top.type, 'integer')
-  assert.deepEqual(tools.get('wiztree_verify_delete').parameters.properties.paths.items, { type: 'string' })
-  assert.deepEqual(tools.get('open_path').parameters.properties.action.enum, ['reveal', 'open'])
-})
+  assert.deepEqual(tools.get('wiztree_verify_delete').parameters.properties.paths.items, { type: 'string' })})
 
 test('the bundled interpreter is found even when DSH_HOME is not exported', async () => {
   const { candidates } = await import('../lib/python-runtime.js')
@@ -352,14 +351,6 @@ test('wiztree_verify_delete refuses to invent a verdict for a missing folder', a
   assert.equal(result.results[0].exists, false)
   assert.equal(result.results[0].level, 'n/a')
   assert.match(result.summary, /已不存在/u)
-})
-
-test('open_path refuses a path that does not exist', async () => {
-  const { tools } = await mountPlugin()
-  await assert.rejects(
-    () => tools.get('open_path').execute({ path: join(tmpdir(), 'wiztree-nope-0000') }, {}),
-    /does not exist/u,
-  )
 })
 
 /**
