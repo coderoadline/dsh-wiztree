@@ -1,25 +1,29 @@
 /**
- * dsh-wiztree — click-to-open implementation.
+ * dsh-wiztree — click behaviour for local paths in a transcript.
  *
  * This is the single source of truth for the browser half. It is plain ESM so
- * the pure helpers can be unit-tested in Node, and
- * `tools/build-client.mjs` wraps it into the CommonJS factory shape the
- * harness client loader serves at `/plugins/dsh-wiztree/client.js` (a bundle
- * cannot import a sibling module: the module system serves only `client.js`).
+ * the pure helpers can be unit-tested in Node, and `tools/build-client.mjs`
+ * wraps it into the CommonJS factory shape the harness client loader serves at
+ * `/plugins/dsh-wiztree/client.js` (a bundle cannot import a sibling module:
+ * the module system serves only `client.js`).
  *
- * Behaviour: one capture-phase click listener on the document turns local
- * links in a transcript into working File Explorer controls.
+ * ## What a click does
  *
- *   * `file:///C:/path`     -> POST /wiztree/open (reveal a folder, open a file)
- *   * `C:\path` / `C:/path` -> the same route, including the file-link buttons
- *                              the renderer already builds for local paths
- *   * relative paths        -> resolved against the session working directory
+ * The shipped markdown renderer resolves a local link to
+ * `<button type="button" class="_fileMention_… _fileLink_…" title="C:\path">`,
+ * whose React `onClick` would open a read-only preview in the right sidebar.
+ * This plugin runs one capture-phase listener on `document`, which settles
+ * before React's root-container listener, and replaces that gesture:
  *
- * A directory is revealed in File Explorer; a file is asked about with
- * POST /wiztree/stat and then either opened by its associated application or
- * revealed. External http(s) links, images and reference chips are never
- * touched, and a click with Ctrl/Cmd/Shift/Alt or a non-primary button keeps
- * its ordinary behaviour.
+ *   * plain click    -> POST /wiztree/trash — the path moves to the Recycle Bin
+ *   * Ctrl/Cmd+click -> POST /wiztree/open  — reveal it in File Explorer
+ *
+ * A directory is the normal case: a WizTree review lists folders, and the one
+ * decision it leads to is "this is rubbish". The Recycle Bin keeps that decision
+ * recoverable, which is why this plugin has no permanent-delete path at all.
+ *
+ * External http(s) links, images, reference chips, Shift/Alt-modified clicks,
+ * and clicks that end a text selection are never intercepted.
  */
 
 /** Endpoint the host half serves for "what is this path?" queries. */
@@ -27,6 +31,9 @@ const STAT_ROUTE = '/wiztree/stat'
 
 /** Endpoint the host half serves for reveal/open gestures. */
 const OPEN_ROUTE = '/wiztree/open'
+
+/** Endpoint the host half serves for the Recycle Bin gesture. */
+const TRASH_ROUTE = '/wiztree/trash'
 
 /** Control characters that may never appear in a path. */
 const CONTROL = /[\u0000-\u001f\u007f]/u
@@ -54,11 +61,11 @@ export function normalizePath(value) {
   const trimmed = String(value).trim().replace(/^"|"$/gu, '')
   if (trimmed.length === 0) return ''
   const windowsShaped = DRIVE.test(trimmed) || UNC.test(trimmed) || trimmed.includes('\\')
-  let out = windowsShaped ? trimmed.replace(/\//gu, '\\') : trimmed
+  const out = windowsShaped ? trimmed.replace(/\//gu, '\\') : trimmed
   if (/^[a-zA-Z]:\\?$/u.test(out)) return `${out.slice(0, 2)}\\`
-  out = out.replace(/[\\/]+$/u, '')
-  if (/^[a-zA-Z]:$/u.test(out)) return `${out}\\`
-  return out.length === 0 ? trimmed : out
+  const trimmedSeparators = out.replace(/[\\/]+$/u, '')
+  if (/^[a-zA-Z]:$/u.test(trimmedSeparators)) return `${trimmedSeparators}\\`
+  return trimmedSeparators.length === 0 ? trimmed : trimmedSeparators
 }
 
 /**
@@ -150,8 +157,10 @@ export function parseDestination(value, cwd) {
 
 /**
  * The renderer's local-path control is a `<button>` carrying the CSS-module
- * class `fileMention` / `fileLink`; the class names are hashed but keep both
- * base names as substrings, which is what this matcher relies on.
+ * classes `fileMention` / `fileLink`. Those class names are hashed but keep both
+ * base names as substrings (`_fileLink_1ypvv_59`), which is what this matcher
+ * reads first; a `title` holding an absolute path is the structural fallback, so
+ * a change to the hash cannot silently disable the gesture.
  * @param {unknown} element - Candidate element.
  * @returns {boolean} True for a local-path link control.
  */
@@ -159,7 +168,9 @@ export function isFileLinkButton(element) {
   if (element === null || typeof element !== 'object') return false
   if (element.tagName !== 'BUTTON') return false
   const className = typeof element.className === 'string' ? element.className : ''
-  return className.includes('fileLink') || className.includes('fileMention')
+  if (className.includes('fileLink') || className.includes('fileMention')) return true
+  const title = typeof element.getAttribute === 'function' ? element.getAttribute('title') : null
+  return typeof title === 'string' && isAbsolutePath(title)
 }
 
 /**
@@ -245,36 +256,119 @@ async function postJson(route, body) {
 }
 
 /**
+ * Render one self-contained toast, so a gesture always reports its outcome
+ * without depending on another client plugin's UI.
+ * @param {string} message - Plain text; never interpreted as markup.
+ * @param {'ok' | 'warn' | 'error'} [kind] - Tone.
+ * @returns {void}
+ */
+function showToast(message, kind = 'ok') {
+  if (typeof document === 'undefined') return
+  let host = document.querySelector('[data-dsh-wiztree="toasts"]')
+  if (host === null) {
+    host = document.createElement('div')
+    host.setAttribute('data-dsh-wiztree', 'toasts')
+    Object.assign(host.style, {
+      position: 'fixed',
+      right: '18px',
+      bottom: '18px',
+      zIndex: '2147483000',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '8px',
+      maxWidth: 'min(520px, 46vw)',
+      pointerEvents: 'none',
+    })
+    document.body.append(host)
+  }
+  const tone = kind === 'error' ? '#ff6b6b' : kind === 'warn' ? '#f0b429' : '#4ade80'
+  const card = document.createElement('div')
+  card.setAttribute('data-dsh-wiztree', 'toast')
+  Object.assign(card.style, {
+    pointerEvents: 'auto',
+    background: '#1f2023',
+    color: '#f2f3f5',
+    border: `1px solid ${tone}`,
+    borderLeft: `3px solid ${tone}`,
+    borderRadius: '10px',
+    padding: '10px 12px',
+    font: '12.5px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif',
+    boxShadow: '0 12px 32px rgba(0, 0, 0, 0.45)',
+    whiteSpace: 'pre-wrap',
+    overflowWrap: 'anywhere',
+  })
+  card.textContent = message
+  host.append(card)
+  setTimeout(() => card.remove(), kind === 'error' ? 12_000 : 6_000)
+}
+
+/**
+ * Mark a link whose target just left the filesystem, so a repeat click is
+ * obviously pointless and the transcript agrees with what happened.
+ * @param {unknown} element - The clicked control.
+ * @returns {void}
+ */
+function markSpent(element) {
+  if (element === null || typeof element !== 'object' || element.style === undefined) return
+  element.setAttribute('data-dsh-wiztree-recycled', '')
+  element.style.textDecoration = 'line-through'
+  element.style.opacity = '0.55'
+}
+
+/**
  * Install the click interceptor.
  * @param {object} ctx - Client root context.
  * @returns {() => void} Disposer removing the listener.
  */
 export function createInterceptor(ctx) {
-  /** Paths with a gesture in flight, so a double click cannot launch twice. */
+  /** Paths with a gesture in flight, so a double click cannot act twice. */
   const inFlight = new Set()
 
   /**
-   * Reveal or open one path through the host half.
+   * Settle one gesture through the host half.
    * @param {{ path: string }} target - Parsed destination.
+   * @param {{ open: boolean, element: unknown }} options - Gesture shape.
    * @returns {Promise<void>} Resolves once the gesture settled.
    */
-  async function act(target) {
+  async function act(target, options) {
     if (inFlight.has(target.path)) return
     inFlight.add(target.path)
+    const unreachable = '无法连接 dsh-wiztree 的宿主半部分，没有执行任何操作。'
     try {
-      const info = await postJson(STAT_ROUTE, { path: target.path })
-      const isDirectory = info !== undefined && info.exists === true && info.type === 'directory'
-      const outcome = await postJson(OPEN_ROUTE, {
-        path: target.path,
-        action: isDirectory ? 'reveal' : 'open',
-      })
-      if (outcome === undefined) {
-        ctx?.logger?.warn?.(`[dsh-wiztree] cannot reach the host route for ${target.path}`)
+      if (options.open) {
+        const opened = await postJson(OPEN_ROUTE, { path: target.path, action: 'reveal' })
+        if (opened === undefined) ctx?.logger?.warn?.(`[dsh-wiztree] ${unreachable} ${target.path}`)
+        else if (opened.ok !== true) showToast(opened.error ?? `打开失败：${target.path}`, 'error')
         return
       }
-      if (outcome.ok !== true && typeof outcome.error === 'string') {
-        ctx?.logger?.warn?.(`[dsh-wiztree] ${outcome.error}`)
+
+      // The stat decides file vs directory (the Recycle Bin API differs) and
+      // whether there is anything left to move.
+      const info = await postJson(STAT_ROUTE, { path: target.path })
+      if (info === undefined) {
+        showToast(unreachable, 'error')
+        ctx?.logger?.warn?.(`[dsh-wiztree] ${unreachable} ${target.path}`)
+        return
       }
+      if (info.exists !== true) {
+        markSpent(options.element)
+        showToast(`已经不存在了（快照数据可能已过期）：\n${target.path}`, 'warn')
+        return
+      }
+
+      const outcome = await postJson(TRASH_ROUTE, { path: target.path })
+      if (outcome === undefined) {
+        showToast(unreachable, 'error')
+        return
+      }
+      if (outcome.ok !== true) {
+        showToast(outcome.error ?? `移入回收站失败：${target.path}`, 'error')
+        return
+      }
+      markSpent(options.element)
+      const kind = info.type === 'directory' ? '文件夹' : '文件'
+      showToast(`${kind}已移入回收站（可在「回收站」里还原）：\n${target.path}`, 'ok')
+      ctx?.logger?.info?.(`[dsh-wiztree] recycled ${target.path}`)
     } finally {
       inFlight.delete(target.path)
     }
@@ -286,7 +380,7 @@ export function createInterceptor(ctx) {
    * @returns {void}
    */
   function onClick(event) {
-    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    if (event.button !== 0 || event.shiftKey || event.altKey) return
     if (event.defaultPrevented) return
     const view = event.view ?? (typeof window !== 'undefined' ? window : undefined)
     const selection = view?.getSelection?.()
@@ -296,6 +390,7 @@ export function createInterceptor(ctx) {
     if (element === undefined) return
     // Reference chips own their own preview gesture.
     if (element.getAttribute('data-ref-chip') !== null) return
+    if (element.getAttribute('data-dsh-wiztree-recycled') !== null) return
 
     const target = destinationOf(element, sessionCwd(ctx))
     if (target === undefined) return
@@ -304,7 +399,7 @@ export function createInterceptor(ctx) {
     // read-only preview tab) must not also run.
     event.preventDefault()
     event.stopPropagation()
-    void act(target)
+    void act(target, { open: event.ctrlKey || event.metaKey, element })
   }
 
   document.addEventListener('click', onClick, true)
@@ -312,18 +407,30 @@ export function createInterceptor(ctx) {
 }
 
 /** Stable plugin identity for the client roster. */
-export const name = 'dsh-wiztree'
+const name = 'dsh-wiztree'
 
 /** No client services are required; routes and sessions are looked up defensively. */
-export const inject = []
+const inject = []
 
 /**
  * Cordis client plugin entry point.
  * @param {object} ctx - Client root context.
  * @returns {() => void} Disposer.
  */
-export function apply(ctx) {
+function apply(ctx) {
   const dispose = createInterceptor(ctx)
-  ctx?.logger?.info?.('[dsh-wiztree] 点击对话里的路径即可在资源管理器中打开')
+  // A page-side marker makes "is the browser half actually loaded?" answerable
+  // from the console without instrumenting the harness.
+  if (typeof window !== 'undefined') {
+    window.__DSH_WIZTREE__ = {
+      name,
+      routes: { stat: STAT_ROUTE, open: OPEN_ROUTE, trash: TRASH_ROUTE },
+      installedAt: new Date().toISOString(),
+      dispose,
+    }
+  }
+  ctx?.logger?.info?.('[dsh-wiztree] 已就绪：单击路径 → 移入回收站；Ctrl/⌘+单击 → 在资源管理器中打开')
   return dispose
 }
+
+export { name, inject, apply }

@@ -1,7 +1,7 @@
 {
   "name": "dsh-wiztree",
-  "version": "0.1.0",
-  "description": "DeepSeek Harness plugin: WizTree snapshot analysis tools (diff / query / verify-delete) plus one-click open-in-Explorer for file paths in the chat.",
+  "version": "0.2.0",
+  "description": "DeepSeek Harness dual-face plugin: WizTree snapshot analysis tools (diff / query / verify-delete) that write clickable Markdown reports, plus click-to-open-in-File-Explorer for local paths in the transcript.",
   "license": "MIT",
   "type": "module",
   "icon": "icon.svg",
@@ -9,11 +9,12 @@
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
-    "./package.json": "./package.json"
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "lib",
-    "tools",
     "locale",
     "icon.svg",
     "cordis.patch.yml",
@@ -22,7 +23,7 @@
   "scripts": {
     "test": "node --test \"tests/*.test.mjs\"",
     "build:client": "node tools/build-client.mjs",
-    "check": "node tools/build-client.mjs --check && node --check lib/index.js && node --check lib/install.js && node --test \"tests/*.test.mjs\"",
+    "check": "node tools/build-client.mjs --check && node --check lib/index.js && node --test \"tests/*.test.mjs\"",
     "sync-skill": "node tools/sync-scripts.mjs",
     "verify-skill-sync": "node tools/sync-scripts.mjs --check"
   },
@@ -36,9 +37,11 @@
     "reveal"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=18",
+    "dsh": ">=0.2.0-rc.1 <0.3.0-0"
   },
   "dsh": {
+    "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
@@ -47,17 +50,11 @@
       "platform": "web"
     },
     "compatibility": {
+      "dsh": ">=0.2.0-rc.1 <0.3.0-0",
       "dshReleases": {
+        "0.2.0-rc.1": "compatible",
         "0.2.0-rc.2": "compatible"
       }
-    }
-  },
-  "peerDependencies": {
-    "@deepseek-ai/dsh": ">=0.2.0-rc.1 <0.3.0-0"
-  },
-  "peerDependenciesMeta": {
-    "@deepseek-ai/dsh": {
-      "optional": true
     }
   }
 }

@@ -12,10 +12,11 @@
 
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { lstat, readdir, stat } from 'node:fs/promises'
 import { statSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { tmpdir, homedir } from 'node:os'
+import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -188,16 +189,72 @@ test('the gate rejects the authoring shorthand it must not be given', async (t) 
   )
 })
 
+test('every tool parameter schema is the object-root JSON Schema the provider receives', async (t) => {
+  const gate = loadShippedGate()
+  const { tools } = await mountPlugin()
+  for (const [name, definition] of tools) {
+    const parameters = definition.parameters
+    assert.equal(parameters.type, 'object', `${name}: parameters must be object-rooted`)
+    assert.ok(Array.isArray(parameters.required), `${name}: parameters.required must be an array`)
+    assert.equal(typeof parameters.properties, 'object', `${name}: parameters.properties must be an object`)
+    for (const key of parameters.required) {
+      assert.ok(Object.hasOwn(parameters.properties, key), `${name}: required "${key}" is not declared in properties`)
+    }
+    // ctx.tools.register() stores `parameters` VERBATIM — it compiles neither
+    // form. A per-property `required: true` (the shorthand `defineTool()` turns
+    // into a `required` array) therefore reaches the provider as a function
+    // definition with no object root, and every request fails with
+    // `400 invalid function call parameters` / 工具定义不合规.
+    for (const [key, property] of Object.entries(parameters.properties)) {
+      assert.ok(!Object.hasOwn(property, 'required'), `${name}: parameters.properties.${key} still carries the authoring shorthand`)
+    }
+    if (gate !== undefined) {
+      assert.doesNotThrow(
+        () => gate.assertSupportedJsonSchema(parameters),
+        `${name}: parameters is outside the harness JSON Schema subset`,
+      )
+    }
+  }
+})
+
+test('the load-time guard rejects the authoring shorthand and accepts JSON Schema', async () => {
+  const { assertParameterSchema } = await import('../lib/index.js')
+  assert.throws(
+    () => assertParameterSchema('t', { a: { type: 'string', required: true } }),
+    /parameters\.type must be "object"/u,
+  )
+  assert.throws(
+    () => assertParameterSchema('t', { type: 'object', properties: { a: { type: 'string', required: true } } }),
+    /carries "required"/u,
+  )
+  assert.throws(
+    () => assertParameterSchema('t', { type: 'object', properties: {}, required: ['a'] }),
+    /not in properties/u,
+  )
+  assert.doesNotThrow(() => assertParameterSchema('t', {
+    type: 'object',
+    additionalProperties: false,
+    required: ['a'],
+    properties: { a: { type: 'string' }, b: { type: 'integer' } },
+  }))
+})
+
 test('required parameters are declared and optional ones are not', async () => {
   const { tools } = await mountPlugin()
-  assert.deepEqual(Object.keys(tools.get('wiztree_diff').parameters), [
+  const requiredOf = name => [...tools.get(name).parameters.required].sort()
+  assert.deepEqual(requiredOf('wiztree_diff'), ['new_snapshot', 'old_snapshot'])
+  assert.deepEqual(requiredOf('wiztree_query'), ['path', 'snapshot'])
+  assert.deepEqual(requiredOf('wiztree_verify_delete'), ['paths'])
+  assert.deepEqual(requiredOf('open_path'), ['path'])
+
+  assert.deepEqual(Object.keys(tools.get('wiztree_diff').parameters.properties), [
     'old_snapshot', 'new_snapshot', 'output', 'min_mb', 'top', 'depth', 'root', 'subtree', 'dump_csv',
   ])
-  assert.equal(tools.get('wiztree_diff').parameters.old_snapshot.required, true)
-  assert.equal(tools.get('wiztree_diff').parameters.min_mb.required, undefined)
-  assert.equal(tools.get('wiztree_query').parameters.path.required, true)
-  assert.equal(tools.get('wiztree_verify_delete').parameters.paths.required, true)
-  assert.equal(tools.get('open_path').parameters.path.required, true)
+  const diff = tools.get('wiztree_diff').parameters.properties
+  assert.equal(diff.min_mb.type, 'number')
+  assert.equal(diff.top.type, 'integer')
+  assert.deepEqual(tools.get('wiztree_verify_delete').parameters.properties.paths.items, { type: 'string' })
+  assert.deepEqual(tools.get('open_path').parameters.properties.action.enum, ['reveal', 'open'])
 })
 
 test('wiztree_diff runs the analysis end to end and reports the exact deltas', { timeout: 180_000 }, async () => {
@@ -278,59 +335,95 @@ test('open_path refuses a path that does not exist', async () => {
   )
 })
 
+/**
+ * Drive one registered web route with a JSON body.
+ * @param {Map<string, Function>} routes - Handlers captured by `mountPlugin()`.
+ * @param {string} route - Route path.
+ * @param {object} body - Request body.
+ * @param {string} [method] - HTTP method.
+ * @returns {Promise<{ status: number, payload: object }>} Captured response.
+ */
+async function callRoute(routes, route, body, method = 'POST') {
+  const chunks = [Buffer.from(JSON.stringify(body))]
+  const request = {
+    method,
+    headers: { 'content-type': 'application/json' },
+    async *[Symbol.asyncIterator]() {
+      for (const chunk of chunks) yield chunk
+    },
+  }
+  let status = 0
+  let text = ''
+  const response = {
+    set statusCode(value) {
+      status = value
+    },
+    get statusCode() {
+      return status
+    },
+    setHeader() {},
+    end(payload) {
+      text = payload?.toString?.() ?? ''
+    },
+  }
+  await routes.get(route)(request, response)
+  return { status, payload: text.length === 0 ? {} : JSON.parse(text) }
+}
+
 test('the browser routes reject malformed requests and answer real paths', async () => {
   const { routes } = await mountPlugin()
-  assert.deepEqual([...routes.keys()].sort(), ['/wiztree/open', '/wiztree/stat'])
+  assert.deepEqual([...routes.keys()].sort(), ['/wiztree/open', '/wiztree/stat', '/wiztree/trash'])
 
-  /**
-   * Drive one route with a JSON body.
-   * @param {string} route - Route path.
-   * @param {object} body - Request body.
-   * @param {string} [method] - HTTP method.
-   * @returns {Promise<{ status: number, payload: object }>} Captured response.
-   */
-  async function call(route, body, method = 'POST') {
-    const chunks = [Buffer.from(JSON.stringify(body))]
-    const request = {
-      method,
-      headers: { 'content-type': 'application/json' },
-      async *[Symbol.asyncIterator]() {
-        for (const chunk of chunks) yield chunk
-      },
-    }
-    let status = 0
-    let text = ''
-    const response = {
-      set statusCode(value) {
-        status = value
-      },
-      get statusCode() {
-        return status
-      },
-      setHeader() {},
-      end(payload) {
-        text = payload?.toString?.() ?? ''
-      },
-    }
-    await routes.get(route)(request, response)
-    return { status, payload: text.length === 0 ? {} : JSON.parse(text) }
-  }
-
-  const bad = await call('/wiztree/stat', {})
+  const bad = await callRoute(routes, '/wiztree/stat', {})
   assert.equal(bad.status, 400)
   assert.match(bad.payload.error, /path/u)
 
-  const methodNotAllowed = await call('/wiztree/stat', {}, 'GET')
+  const methodNotAllowed = await callRoute(routes, '/wiztree/stat', {}, 'GET')
   assert.equal(methodNotAllowed.status, 405)
 
-  const existing = await call('/wiztree/stat', { path: PACKAGE_ROOT })
+  const existing = await callRoute(routes, '/wiztree/stat', { path: PACKAGE_ROOT })
   assert.equal(existing.status, 200)
   assert.equal(existing.payload.exists, true)
   assert.equal(existing.payload.type, 'directory')
 
-  const absent = await call('/wiztree/open', { path: join(tmpdir(), 'wiztree-nope-0000') })
+  const absent = await callRoute(routes, '/wiztree/open', { path: join(tmpdir(), 'wiztree-nope-0000') })
   assert.equal(absent.status, 404)
   assert.equal(absent.payload.ok, false)
+
+  const trashMalformed = await callRoute(routes, '/wiztree/trash', {})
+  assert.equal(trashMalformed.status, 400)
+
+  const trashMethod = await callRoute(routes, '/wiztree/trash', {}, 'GET')
+  assert.equal(trashMethod.status, 405)
+
+  const trashAbsent = await callRoute(routes, '/wiztree/trash', { path: join(tmpdir(), 'wiztree-nope-0000') })
+  assert.equal(trashAbsent.status, 404)
+
+  // The guard must refuse a path a mis-click can never be allowed to move,
+  // and it must refuse it before anything touches the filesystem.
+  const refused = await callRoute(routes, '/wiztree/trash', { path: 'C:\\' })
+  assert.equal(refused.status, 502)
+  assert.match(refused.payload.error, /拒绝操作/u)
+  assert.ok(existsSync('C:\\'), 'the volume root must survive the refused request')
+})
+
+test('a click sends a real folder to the Recycle Bin and leaves it recoverable', { timeout: 180_000 }, async () => {
+  const { routes } = await mountPlugin()
+  const out = mkdtempSync(join(tmpdir(), 'wiztree-trash-'))
+  const doomed = join(out, 'doomed-folder')
+  mkdirSync(doomed)
+  writeFileSync(join(doomed, 'payload.txt'), 'wiztree recycle test')
+  assert.ok(existsSync(doomed))
+
+  const result = await callRoute(routes, '/wiztree/trash', { path: doomed })
+
+  assert.equal(result.status, 200, `recycle failed: ${result.payload.error ?? ''}`)
+  assert.equal(result.payload.ok, true)
+  assert.equal(result.payload.recycled, true)
+  assert.equal(result.payload.type, 'directory')
+  // Gone from the filesystem — because it moved, not because it was erased:
+  // the Windows Recycle Bin still holds it, and undoing this is a shell action.
+  assert.equal(existsSync(doomed), false, 'the folder should have left the filesystem')
 })
 
 test('the synced scripts match the skill copies byte for byte', () => {
@@ -349,12 +442,41 @@ test('the synced scripts match the skill copies byte for byte', () => {
 
 test('readdir sanity: the package ships what the manifest lists', async () => {
   const entries = await readdir(join(PACKAGE_ROOT, 'lib'))
-  for (const expected of ['index.js', 'client.js', 'install.js', 'paths.js', 'run-python.js', 'python-runtime.js', 'scripts']) {
+  for (const expected of ['index.js', 'client.js', 'paths.js', 'run-python.js', 'python-runtime.js', 'scripts']) {
     assert.ok(entries.includes(expected), `lib/${expected} is missing`)
   }
+  assert.ok(existsSync(join(PACKAGE_ROOT, 'src', 'client.js')), 'the browser half source is missing')
   assert.ok(existsSync(join(PACKAGE_ROOT, 'cordis.patch.yml')))
   assert.ok(existsSync(join(PACKAGE_ROOT, 'tools', 'build-client.mjs')))
   assert.ok(existsSync(join(PACKAGE_ROOT, 'tools', 'sync-scripts.mjs')))
+})
+
+test('the harness can resolve the Settings metadata through the exports map', async (t) => {
+  const manifest = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'package.json'), 'utf8'))
+  assert.equal(manifest.dsh?.manifestVersion, 1, 'dsh.manifestVersion must declare the format the readers expect')
+  assert.equal(manifest.dsh?.client?.platform, 'web', 'dsh.client.platform is required for the browser half')
+  assert.equal(manifest.dsh?.bundle?.patch, './cordis.patch.yml')
+
+  // app-boot's readPluginMeta() resolves `<pkg>/locale/en.json`, every other
+  // `<pkg>/locale/<lang>.json` beside it, and `<pkg>/package.json` as complete
+  // module specifiers through Node's resolver — so the package `exports` map
+  // decides whether the Settings row has a title and a description at all. A
+  // map that hides the locale files downgrades the row silently, which reads as
+  // "broken plugin" while the plugin itself works. Resolve for real here
+  // instead of matching key shapes, so any working pattern is accepted.
+  const profile = process.env.DSH_PROFILE_DIR ?? join(homedir(), '.dsh', 'profiles', 'desktop')
+  const anchor = join(profile, 'package.json')
+  if (!existsSync(anchor)) {
+    t.skip(`no DSH profile at ${profile}; install the plugin to exercise resolution`)
+    return
+  }
+  const require = createRequire(anchor)
+  for (const spec of ['package.json', 'locale/en.json', 'locale/zh.json']) {
+    assert.doesNotThrow(
+      () => require.resolve(`dsh-wiztree/${spec}`),
+      `the harness cannot resolve dsh-wiztree/${spec} from the profile tree`,
+    )
+  }
 })
 
 test('the plugin presents itself in Settings: relative icon and locale metadata', () => {

@@ -12,7 +12,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
-import { parseDestination, fileUrlToPath, isAbsolutePath, isFileLinkButton } from '../lib/install.js'
+import { parseDestination, fileUrlToPath, isAbsolutePath, isFileLinkButton } from '../src/client.js'
 import { parsePathTarget } from '../lib/paths.js'
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')

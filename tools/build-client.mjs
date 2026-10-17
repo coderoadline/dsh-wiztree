@@ -2,7 +2,7 @@
 /**
  * Generate `lib/client.js` — the browser half the harness serves.
  *
- * The implementation lives in `lib/install.js` as plain ESM (so the pure
+ * The implementation lives in `src/client.js` as plain ESM (so the pure
  * helpers can be unit-tested in Node), but a plugin bundle must be a single
  * CommonJS factory registered through the shell's module table; the module
  * system serves only `client.js` (plus emitted chunks), so a sibling module
@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PACKAGE_ROOT = resolve(HERE, '..')
-const SOURCE = join(PACKAGE_ROOT, 'lib', 'install.js')
+const SOURCE = join(PACKAGE_ROOT, 'src', 'client.js')
 const TARGET = join(PACKAGE_ROOT, 'lib', 'client.js')
 
 /** Named exports the loader and the tests rely on. */
@@ -27,7 +27,7 @@ const EXPORTS = ['name', 'inject', 'apply']
 
 /**
  * Strip ESM syntax from the implementation source.
- * @param {string} source - `lib/install.js` contents.
+ * @param {string} source - `src/client.js` contents.
  * @returns {string} A bare script body.
  */
 function toScriptBody(source) {
@@ -53,13 +53,17 @@ function buildBundle(body, origin) {
 // /plugins/dsh-wiztree/client.js and executes it through the vendored cordis
 // Loader's lazy-CJS module table (window.__ModuleLoader__.load).
 //
-// What it does: one capture-phase click listener turns local links in a
-// transcript into File Explorer controls — \`file:///C:/...\` links (which the
-// renderer's URL allowlist drops, leaving an inert href) as well as the bare
-// absolute paths the renderer already renders as file-link buttons (which
-// would otherwise open a read-only preview tab). A directory is revealed;
-// a file is opened by its associated application. External http(s) links,
-// images and reference chips are left alone.
+// What it does: one capture-phase click listener on \`document\` replaces the
+// renderer's local-link gesture. The shipped markdown renderer
+// (dsh-client-ui-primitives) resolves a local link to
+// \`<button type="button" class="_fileMention_… _fileLink_…" title="C:\\path">\`,
+// whose React onClick calls the chat owner's \`openFile\` — i.e. a read-only
+// right-sidebar preview. The listener runs on \`document\` in the capture phase,
+// so it settles before React's root-container listener: a plain click moves the
+// path to the Recycle Bin (POST /wiztree/trash — never a permanent delete) and
+// reports the outcome in a toast, while Ctrl/Cmd+click reveals it in File
+// Explorer instead. External http(s) links, images and reference chips are
+// untouched.
 
 (() => {
   const root = typeof globalThis !== "undefined" ? globalThis : undefined;
@@ -82,7 +86,7 @@ ${EXPORTS.map(key => `      exports.${key} = ${key};`).join('\n')}
 }
 
 const source = readFileSync(SOURCE, 'utf8')
-const bundle = buildBundle(toScriptBody(source), 'lib/install.js')
+const bundle = buildBundle(toScriptBody(source), 'src/client.js')
 const check = process.argv.includes('--check')
 
 let current = ''

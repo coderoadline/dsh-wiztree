@@ -2,7 +2,7 @@
  * Unit tests for the path helpers.
  *
  * `lib/paths.js` is the host-side reference implementation; the browser half
- * re-implements the same grammar in `lib/install.js` (a plugin bundle cannot
+ * re-implements the same grammar in `src/client.js` (a plugin bundle cannot
  * import host code). The parity block at the end keeps the two honest.
  */
 
