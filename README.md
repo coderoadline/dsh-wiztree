@@ -26,10 +26,27 @@ python scripts\wiztree_snapshot_diff.py 旧.csv 新.csv -o out\report.md --min-m
 | `wiztree_verify_delete` | 只读查看候选目录真实内容，给 ✅/⚠️/❌ 结论（第 5 步子智能体用） | `wiztree_verify_delete.py` |
 | `open_path` | 在资源管理器里定位某个文件/目录（`reveal`，默认），或用默认程序打开（`open`） | — |
 
-模型侧只看到「工具」，Python 与 pandas 由插件自己解决：默认使用 **DSH Desktop 自带运行时**里的 CPython
-（`<DSH_HOME>/dsh-runtimes/dsh-primary-runtime/dependencies/python`，内含 pandas/numpy），
+模型侧只看到「工具」，Python 与 pandas 由插件自己解决：默认使用 **DSH Desktop 自带运行时**里的
+CPython（`<home>/dsh-runtimes/dsh-primary-runtime/dependencies/python`，内含 pandas/numpy），
 找不到时才回退到 `PATH` 上的 `python3`/`python`，并且**先探测能否 import pandas + numpy**，
 不能就在工具结果里给一条可执行的修复建议，而不是把一坨 traceback 丢给模型。
+
+`<home>` 按这个顺序解析，取第一个存在的解释器：
+
+1. `DSH_HOME`（显式配置）；
+2. `DSH_PROFILE_DIR` 的上两级（profile 目录是 `<home>/profiles/<name>`）；
+3. `~/.dsh`。
+
+> ⚠️ **第 3 条不是可有可无的兜底。** 桌面版把家目录放在 `~/.dsh`，但它**不给自己**的进程
+> 导出 `DSH_HOME` —— 那个变量只给工具子进程。早先的发现逻辑只信 `DSH_HOME`，于是在一台
+> 明明带着 pandas 的机器上，插件看不到自带运行时、静默回落到 PATH 上的裸 `python.exe`
+> 并报「没有 pandas」。测试里当时写了 `process.env.DSH_HOME ??= ~/.dsh` 去补这个变量，
+> 于是**测试永远通过、生产永远失败** —— 现在那行已经删掉，并有一条用例专门在不设
+> `DSH_HOME` 的条件下跑。
+
+顺带修掉同一函数里的第二个 bug：`runtime.json` 的 `python` 字段存的是**版本号**
+（`"3.12.14"`），不是路径，原代码把它当成解释器命令去 spawn。现在只在它确实是绝对路径时才采用，
+并有一条「所有绝对候选必须真实存在」的不变式兜住这类错误。
 
 ### 2. 对话里的路径：点一下 = 进回收站
 

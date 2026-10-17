@@ -27,10 +27,11 @@ import { loadShippedGate } from './helpers/shipped-gate.mjs'
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const FIXTURES = join(PACKAGE_ROOT, 'tests', 'fixtures')
 
-// The Desktop host runs the plugin with DSH_HOME set, which is how the bundled
-// Python (pandas + numpy) is discovered. Reproduce that here so the test does
-// not depend on whatever interpreter happens to be first on PATH.
-process.env.DSH_HOME ??= join(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.dsh')
+// Deliberately do NOT set DSH_HOME here. The host process does not carry it —
+// the app exports it to the subprocesses it spawns, not to itself — and faking
+// it in the suite is precisely what hid a real bug: discovery consulted the
+// bundled runtime only when that variable was set, so the tools fell back to a
+// PATH Python without pandas while the bundled one sat right there.
 resetPythonCache()
 
 /**
@@ -255,6 +256,32 @@ test('required parameters are declared and optional ones are not', async () => {
   assert.equal(diff.top.type, 'integer')
   assert.deepEqual(tools.get('wiztree_verify_delete').parameters.properties.paths.items, { type: 'string' })
   assert.deepEqual(tools.get('open_path').parameters.properties.action.enum, ['reveal', 'open'])
+})
+
+test('the bundled interpreter is found even when DSH_HOME is not exported', async () => {
+  const { candidates } = await import('../lib/python-runtime.js')
+  const savedHome = process.env.DSH_HOME
+  const savedProfile = process.env.DSH_PROFILE_DIR
+  delete process.env.DSH_HOME
+  delete process.env.DSH_PROFILE_DIR
+  try {
+    const found = candidates(undefined)
+    // Invariant: every absolute candidate must really exist. This is what
+    // catches a manifest field being mistaken for an interpreter path —
+    // runtime.json records `"python": "3.12.14"`, a version, not a path.
+    for (const candidate of found) {
+      if (/[\\/]/u.test(candidate)) assert.ok(existsSync(candidate), `candidate ${candidate} does not exist`)
+    }
+    const bundled = found.find(candidate => /dsh-runtimes[\\/]dsh-primary-runtime[\\/]dependencies[\\/]python[\\/]/u.test(candidate))
+    if (bundled === undefined) {
+      assert.ok(true, 'skipped: this machine carries no bundled DSH runtime')
+      return
+    }
+    assert.ok(existsSync(bundled), `the bundled interpreter ${bundled} should exist`)
+  } finally {
+    if (savedHome !== undefined) process.env.DSH_HOME = savedHome
+    if (savedProfile !== undefined) process.env.DSH_PROFILE_DIR = savedProfile
+  }
 })
 
 test('wiztree_diff runs the analysis end to end and reports the exact deltas', { timeout: 180_000 }, async () => {
