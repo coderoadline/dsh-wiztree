@@ -1,18 +1,23 @@
 /**
- * Test helper: run tool output schemas through the harness's REAL gate.
+ * Test helper: run tool schemas through the harness's REAL gate.
  *
  * `ctx.tools.register()` calls `assertSupportedJsonSchema()` on the output
- * schema before anything else, and it is the only place that can reject a
- * plausible-looking schema. This module extracts that function — plus the
- * shipped `isJsonValue` its annotation check calls — straight out of the
- * installed DSH Desktop `app.asar`, so the suite asserts against the code that
- * will actually load the plugin rather than a re-implementation.
+ * schema, and that is the only place a plausible-looking schema can be
+ * rejected — which is exactly how the plugin once shipped a parameter schema
+ * the provider refused with `invalid function call parameters`.
  *
- * Everything degrades to "unavailable" when the app is not installed, so the
- * suite still runs on a machine without DSH Desktop.
+ * The gate is taken from the installed DSH Desktop `app.asar` rather than
+ * re-implemented, so the suite asserts against the code that will actually load
+ * the plugin. Release 0.2.2 split `dsh-tools` into a re-export plus a hashed
+ * chunk, so nothing here hardcodes a file name or a comment marker: the chunk
+ * is discovered from the entry's own `import` statements, injected whole, and
+ * only its two external imports are substituted.
+ *
+ * Everything degrades to "unavailable" when the app is not installed or the
+ * layout is unrecognised, so the suite still runs without DSH Desktop.
  */
 
-import { closeSync, existsSync, openSync, readFileSync, readSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readSync } from 'node:fs'
 
 /** Candidate app.asar locations, most specific first. */
 const ARCHIVE_CANDIDATES = [
@@ -20,11 +25,20 @@ const ARCHIVE_CANDIDATES = [
   'C:/Program Files/DeepSeek Harness/resources/app.asar',
 ]
 
-/** Tools bundle that owns the gate. */
-const TOOLS_ENTRY = 'dsh/node_modules/@deepseek-ai/dsh-tools/lib/index.js'
+/** Tools package directory inside the archive. */
+const TOOLS_DIR = 'dsh/node_modules/@deepseek-ai/dsh-tools/lib'
 
-/** Values bundle that owns `isJsonValue`. */
+/** Values bundle that owns `isJsonValue` / `assertNever`. */
 const VALUES_ENTRY = 'dsh/node_modules/@deepseek-ai/dsh-util-values/lib/index.js'
+
+/** A relative specifier such as `./shared-abc123.js`. */
+const RELATIVE_SPECIFIER = /from\s*["'](\.\/[^"']+)["']/gu
+
+/** Any `import ... from "x";` statement, which a bare function body cannot host. */
+const IMPORT_STATEMENT = /^import\s[\s\S]*?from\s*["'][^"']+["'];?[^\S\n]*$/gmu
+
+/** An `export { ... };` statement, likewise invalid inside a function body. */
+const EXPORT_STATEMENT = /^export\s*\{[\s\S]*?\};?[^\S\n]*$/gmu
 
 /**
  * Locate the installed app.asar.
@@ -38,8 +52,7 @@ export function findArchive() {
  * Read the archive's JSON directory.
  *
  * The pickle's declared header size is not reliable across builders, so the
- * directory is found by brace-matching from its opening `{`, exactly as the
- * extraction tooling does.
+ * directory is found by brace-matching from its opening `{`.
  * @param {number} descriptor - Open file descriptor.
  * @returns {{ header: object, payloadOffset: number }} Directory and payload start.
  */
@@ -105,38 +118,73 @@ export function readArchiveFile(archive, entry) {
   }
 }
 
+/**
+ * Resolve `./x.js` against a directory inside the archive.
+ * @param {string} fromDir - Directory of the importing file.
+ * @param {string} specifier - Relative specifier.
+ * @returns {string} Inner archive path.
+ */
+function resolveRelative(fromDir, specifier) {
+  const parts = fromDir.split('/')
+  for (const segment of specifier.split('/')) {
+    if (segment === '.' || segment === '') continue
+    if (segment === '..') parts.pop()
+    else parts.push(segment)
+  }
+  return parts.join('/')
+}
+
+/**
+ * Turn a bundled ESM chunk into a body a `new Function` can host: drop its
+ * import/export statements, which only a module may carry.
+ * @param {string} source - Chunk text.
+ * @returns {string} Evaluable body.
+ */
+function asFunctionBody(source) {
+  return source.replace(IMPORT_STATEMENT, '').replace(EXPORT_STATEMENT, '')
+}
+
+/**
+ * Locate the chunk that actually defines the gate.
+ *
+ * Release 0.2.2's `dsh-tools/lib/index.js` is a re-export; the implementation
+ * sits in a hash-named sibling reachable from that entry's imports. Discovery
+ * keeps working when the hash changes.
+ * @param {string} archive - Archive path.
+ * @returns {{ toolsBody: string, valuesBody: string } | undefined} Chunk bodies.
+ */
+function collectBodies(archive) {
+  const entry = readArchiveFile(archive, `${TOOLS_DIR}/index.js`)
+  const values = readArchiveFile(archive, VALUES_ENTRY)
+  if (entry === undefined || values === undefined) return undefined
+
+  const candidates = []
+  for (const match of entry.matchAll(RELATIVE_SPECIFIER)) {
+    const inner = resolveRelative(TOOLS_DIR, match[1])
+    const text = readArchiveFile(archive, inner)
+    if (text !== undefined) candidates.push(text)
+  }
+  // The entry itself may carry the gate (the pre-0.2.2 layout).
+  candidates.push(entry)
+
+  const toolsBody = candidates
+    .map(asFunctionBody)
+    .find(body => /function\s+assertSupportedJsonSchema\s*\(/u.test(body))
+  if (toolsBody === undefined) return undefined
+
+  return { toolsBody, valuesBody: asFunctionBody(values) }
+}
+
 /** Internal probe used by the tests to explain why the gate is unavailable. */
 export function explainUnavailable() {
   const archive = findArchive()
   if (archive === undefined) return 'no app.asar found'
-  const tools = readArchiveFile(archive, TOOLS_ENTRY)
-  if (tools === undefined) return `${TOOLS_ENTRY} not readable`
-  const values = readArchiveFile(archive, VALUES_ENTRY)
-  if (values === undefined) return `${VALUES_ENTRY} not readable`
-  const start = tools.indexOf('var JsonSchemaError = class extends HarnessError')
-  const end = tools.indexOf('/** Safely test the lossless JSON boundary')
-  if (start < 0 || end <= start) return `gate markers not found (start=${start} end=${end})`
-  return 'ok'
-}
-
-/**
- * Extract `isJsonValue` from the shipped values bundle.
- * @param {string} source - Bundle text.
- * @returns {((value: unknown) => boolean) | undefined} The function, or undefined.
- */
-function extractIsJsonValue(source) {
-  const valuesStart = source.indexOf('function isJsonValue(value)')
-  const helpersStart = source.indexOf('function walkJsonValue(')
-  if (valuesStart < 0 || helpersStart < 0 || valuesStart <= helpersStart) return undefined
-  const valuesEnd = source.indexOf('\n}', valuesStart)
-  if (valuesEnd < 0) return undefined
-  const helpers = source.slice(helpersStart, valuesStart)
-  const body = source.slice(valuesStart, valuesEnd + 2)
-  try {
-    return new Function(`${helpers}\n${body}\nreturn isJsonValue;`)()
-  } catch {
-    return undefined
+  const bodies = collectBodies(archive)
+  if (bodies === undefined) return `the gate chunk was not found under ${TOOLS_DIR}`
+  for (const [label, body] of [['checkSchemaNode', bodies.toolsBody], ['JsonSchemaError', bodies.toolsBody], ['isJsonValue', bodies.valuesBody]]) {
+    if (!new RegExp(`(?:function|class|var|const|let)\\s+${label}\\b`, 'u').test(body)) return `${label} not found in the shipped chunk`
   }
+  return 'ok'
 }
 
 /**
@@ -146,33 +194,29 @@ function extractIsJsonValue(source) {
 export function loadShippedGate() {
   const archive = findArchive()
   if (archive === undefined) return undefined
-  const tools = readArchiveFile(archive, TOOLS_ENTRY)
-  const values = readArchiveFile(archive, VALUES_ENTRY)
-  if (tools === undefined || values === undefined) return undefined
+  const bodies = collectBodies(archive)
+  if (bodies === undefined) return undefined
 
-  // Locate both ends by content so a bundle re-shuffle cannot silently change
-  // the extracted range.
-  const start = tools.indexOf('var JsonSchemaError = class extends HarnessError')
-  const end = tools.indexOf('/** Safely test the lossless JSON boundary')
-  if (start < 0 || end < 0 || end <= start) return undefined
-  const block = tools.slice(start, end)
+  // The chunk imports exactly two names from other packages; everything else is
+  // inlined. Substitute those two and supply the harness's own error base.
+  const program = [
+    bodies.valuesBody,
+    'class HarnessError extends Error {',
+    '  constructor(message, code) { super(message); this.code = code; this.name = "HarnessError" }',
+    '}',
+    bodies.toolsBody,
+    'return { assertSupportedJsonSchema, isJsonValue }',
+  ].join('\n')
 
-  const factory = new Function(`
-    class HarnessError extends Error {
-      constructor(message, code) { super(message); this.code = code; }
-    }
-    let isJsonValue = () => true;
-    ${block}
-    return {
-      setJsonValue: (fn) => { isJsonValue = fn; },
-      assertSupportedJsonSchema,
-    };
-  `)
-  const gate = factory()
-  const shipped = extractIsJsonValue(values)
-  if (shipped !== undefined) gate.setJsonValue(shipped)
+  let gate
+  try {
+    gate = new Function(program)()
+  } catch {
+    return undefined
+  }
+  if (typeof gate?.assertSupportedJsonSchema !== 'function') return undefined
   return {
     assertSupportedJsonSchema: gate.assertSupportedJsonSchema,
-    hasShippedIsJsonValue: shipped !== undefined,
+    hasShippedIsJsonValue: typeof gate.isJsonValue === 'function',
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "dsh-wiztree",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DeepSeek Harness dual-face plugin: WizTree snapshot analysis tools (diff / query / verify-delete) that write clickable Markdown reports, plus click-to-open-in-File-Explorer for local paths in the transcript.",
   "license": "MIT",
   "type": "module",
@@ -53,7 +53,8 @@
       "dsh": ">=0.2.0-rc.1 <0.3.0-0",
       "dshReleases": {
         "0.2.0-rc.1": "compatible",
-        "0.2.0-rc.2": "compatible"
+        "0.2.0-rc.2": "compatible",
+        "0.2.2-rc.5": "compatible"
       }
     }
   }

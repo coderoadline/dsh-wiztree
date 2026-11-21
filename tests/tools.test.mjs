@@ -543,6 +543,14 @@ test('the harness can resolve the Settings metadata through the exports map', as
     return
   }
   const require = createRequire(anchor)
+  // The package resolves only once it is installed in that profile. A repo check
+  // must not fail merely because this machine has not installed it yet.
+  try {
+    require.resolve('dsh-wiztree/package.json')
+  } catch {
+    t.skip(`dsh-wiztree is not installed in ${profile}; install it to exercise resolution`)
+    return
+  }
   for (const spec of ['package.json', 'locale/en.json', 'locale/zh.json']) {
     assert.doesNotThrow(
       () => require.resolve(`dsh-wiztree/${spec}`),
